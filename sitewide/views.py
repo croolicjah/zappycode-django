@@ -1,12 +1,23 @@
 import time
-import stripe
-from django.urls import reverse
-from .models import ZappyUser
-from django.shortcuts import render, redirect
-from django.contrib.auth.decorators import login_required
-from courses.models import Course
-from django.contrib import messages
+import uuid
+from datetime import datetime, timedelta
+
 import environ
+import stripe
+from allauth.account.models import EmailAddress
+from allauth.account.views import login
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.hashers import make_password
+from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse, resolve
+from django.views import View
+
+from courses.models import Course
+from sitewide.forms import InviteLinkForm
+from sitewide.models import InviteKeys
+from sitewide.overrided_auth_backend import NewRestrictionAuthenticationBackend as Validate_by_iKey
+from .models import ZappyUser
 
 env = environ.Env()
 environ.Env.read_env()
@@ -30,9 +41,25 @@ def checkout(request):
     if not request.user.is_authenticated:
         return redirect(reverse('account_signup') + '?next=/checkout/%3Fplan%3D' + request.GET.get('plan', 'monthly25'))
 
-    if request.user.active_membership:
-        messages.warning(request, 'You already have a zappycode membership')
-        return redirect('home')
+    else:
+        # fixed membership check. if auth and not active membership then redirect. using request.user it's not
+        # enough. request user has no direct access to ZappyUser fields. added validation users with access
+        # from invitation linksdon't know if except is going to happen. in case murphy's law is true
+        #  it will be better to use try. Cannot imagine more errors from 'try except'
+        try:
+            z_user = ZappyUser.objects.get(pk=request.user.id)
+            if z_user.active_membership or Validate_by_iKey(z_user):
+                messages.warning(request, 'You already have got a zappycode membership')
+                return redirect('home')
+            else:
+                messages.warning(request, 'Your membership has expired. Grab new one')
+                # !!!! user has got no membersip but got account, should be redirect to login!!!! don't know if working
+                return redirect(reverse('pricing') + '?next=/checkout/%3Fplan%3D' + request.GET.get('plan', 'monthly25'))
+
+        # hope it's right error. have to be checked. need to be something because against PEP8
+        except AttributeError:
+            messages.error(request, "Oops! Something went wrong. Please try again" )
+            redirect('pricing')
 
     stripe.api_key = env.str('STRIPE_API_KEY', default='')
 
@@ -104,12 +131,203 @@ def payment_success(request):
 @login_required
 def cancel_subscription(request):
     if request.method == 'POST':
-        subscription = stripe.Subscription.retrieve(request.user.stripe_subscription_id)
-        subscription.cancel_at_period_end = True
-        request.user.cancel_at_period_end = True
-        subscription.save()
-        request.user.save()
-        messages.success(request, 'Your subscription has been canceled')
-        return redirect('account')
+        # fixed bindings to a user. this from request has no access to ZappyUser fields
+        try:
+            z_user = ZappyUser.objects.get(pk=request.user.id)
+            subscription = stripe.Subscription.retrieve(z_user.stripe_subscription_id)
+            subscription.cancel_at_period_end = True
+            z_user.cancel_at_period_end = True
+            subscription.save()
+            request.z_user.save()
+
+            messages.success(request, 'Your subscription has been canceled')
+            return redirect('account')
+
+        # hope it's value error, can be as well AttributeError.
+        # PEP8 shouting that without this except is to broad. but have to be checked
+        except AttributeError:
+            messages.error(request, "Subscription has been NOT canceled. Try again, please.")
+            redirect('account')
 
     return redirect('home')
+
+
+class InviteGenerator(View):
+
+    def get(self, request, *args, **kwargs):
+        creator = get_object_or_404(ZappyUser, pk=request.user.id)
+        current_url = resolve(request.path).url_name
+        print(current_url)
+        print('Jestem w metodzie get InviteGenerator')
+        if creator.is_staff:
+            form = InviteLinkForm()
+
+            cnx = {
+                'code_expiration': datetime.now() + timedelta(days=14),
+                'valid_until': datetime.now() + timedelta(days=30),
+                'link': 'http://zappycode.com/invite/free?',
+                'color': '#6e00ff',
+                'form': form
+            }
+            return render(request, 'account/invite.html', cnx)
+        else:
+            messages.error(request, "Sorry! You don't have permission to get here")
+        return redirect('home')
+
+    def post(self, request, *args, **kwargs):
+        invite_keys = InviteKeys()
+        form = InviteLinkForm(request.POST)
+
+        # check whether it's valid:
+        if form.is_valid():
+            # process the data in form.cleaned_data as required
+
+            invite_keys.membership_until = datetime.now() + timedelta(days=int(form.cleaned_data['period']))
+            invite_keys.creator = request.user.username
+            invite_keys.code_expiration = datetime.now() + timedelta(days=int(form.cleaned_data['code_expiration']))
+            invite_keys.key = self.set_invitation_link((int(form.cleaned_data['period'])))
+            invite_keys.save()
+
+            # needed save first to fetch id of invite key. adding email to link. and again save
+            invite_keys.key += invite_keys.email
+            invite_keys.invite_password = self.key_make_password(invite_keys.creator, invite_keys.id)
+
+            # zappy user binding
+            invite_keys.key_owner = ZappyUser(
+                username=invite_keys.key, password=invite_keys.invite_password
+            ).save()
+
+            invite_keys.save()
+
+            cnx = {
+                'e-mail': invite_keys.email,
+                'code_expiration': invite_keys.code_expiration,
+                'valid_until': invite_keys.membership_until,
+                'link': invite_keys.key,
+                'form': form
+            }
+        else:
+            cnx = {
+                'error': form.errors,
+                'form': form
+            }
+
+        return render(request, 'account/invite.html', cnx)
+
+    # inner method. just utility, no use of self
+    @staticmethod
+    def set_invitation_link(days=30, email=''):
+        start_with = 'https://zappycode.com/invite/free?key='
+        stamp = str(datetime.now().timestamp())
+        uuit = str(uuid.uuid5(uuid.uuid1(), datetime.now().__str__()))
+        key = '&period=' + str(days) + '&tmsp=' + stamp + '&ZaPPyCoDe=' + uuit + '&email=' + email
+        return start_with + key
+
+    @staticmethod
+    def unzip_invitation_link(link):
+
+        # http://127.0.0.1:8000/invite/free
+        # ?period=62
+        # &tmsp=1592409205.516944
+        # &ZaPPyCoDe=fae08545-7e5b-5348-a84e-5b69ac7e245a
+        # &email=fun_coding@zappycode.com
+
+        # slicing link to return tuple of data
+        key = link[link.find('?'):]
+        period = link[link.find('=') + 1:link.find('&')]
+        timestamp = link[link.find('&tmsp') + 6:link.find('&ZaPPyCoDe=')]
+        email = link[link.rfind('=') + 1:]
+        return key, period, email, timestamp
+
+    # inner method. can be used in different class. just utility, no use of self
+    # chain with default '' to make method more flexible to use.
+    @staticmethod
+    def key_make_password(chain='', *args):
+        for arg in args:
+            chain += str(arg)
+
+        print(chain)
+        print('jestem w key_make_password')
+        return make_password(chain)
+
+
+class InviteSignView(InviteGenerator):
+
+    def __init__(self):
+        super(InviteSignView, self).__init__()
+
+        print(self.__dict__, 'jestem w __init__ InviteSignView')
+
+    def get(self, request, *args, **kwargs):
+        unpacked = self.unzip_invitation_link(request.get_full_path())
+
+        print(unpacked)
+        print('jesetem w get InviteSignView')
+
+        if unpacked[2] != 'fun_coding@zappycode.com':
+            #  feature to do- generate link with email address
+            messages.error(request, 'Invitation link is incorrect')
+            redirect('home')
+        else:
+            messages.error(request, "You have to sign up to activate your link")
+
+            print('invite/free/' + unpacked[0], 'jesetem w w else metody get')
+
+            return redirect(reverse('invite_signup', kwargs ={
+                'period': request.GET['period'],
+                'tmstp': request.GET['tmstp'],
+                'ZaPPyCoDe': request.GET['ZaPPyCoDe'],
+                'email': request.GET['email'],
+            }), template_name='account/invite_signup.html')
+        cnx = {
+            'error': 'no w końcu się udało'
+        }
+        return render(request, 'account/invite_signup.html', cnx)
+
+
+
+    def post(self, request, *args, **kwargs):
+        if request.POST['password1'] == request.POST['password2']:
+            print(kwargs)
+            print('jesetem w post InviteSignView')
+            try:
+                user = ZappyUser.objects.get(email=request.POST['email'])
+                print(user.email)
+                print('melduję się w post try. nie wywaliło. user already exists')
+                return redirect(reverse('invite_signup', kwargs = request.GET), {'error': 'User ' + str(user) + ' already exists!'}, template_name='account/invite_signup.html')
+
+            except UnboundLocalError:
+                user = request.POST
+                print(request.POST.__str__())
+                print('jestem w except AttributeError SignUpViews')
+                # change email
+                user.email = request.POST['email']
+                # change password
+                user.set_password(request.POST['password1'])
+                # set active_membership
+                user.active_membership = True
+                user.save()
+
+                # bindings to allauth emails
+                EmailAddress(
+                    user = user, email=user.email, primary=True, verified=True,
+                ).save()
+
+                # log in user and redirect home
+                login(request, user)
+                # and finally inform user about period of free access
+                messages.success(request, 'Hurra! You have got free access to ZappyCode for ', self.unpacked[1],' days')
+
+            return redirect('home')
+        else:
+            print()
+            cnx = { 'error': 'Passwords not match!!!' }
+            return redirect(reverse('invite_signup', kwargs = request.GET), cnx, template_name='account/invite_signup.html')
+
+    # method to be sure that password is really hashed
+    @staticmethod
+    def check_if_hashed(request, password):
+        if password[:password.find('$')] != 'pbkdf2_sha256':
+            messages.warning(request, 'For security reasons need to hash password')
+            return InviteGenerator.key_make_password(password)
+        return password

@@ -1,0 +1,27 @@
+.push-button {
+  background-image: url('../normal.png');
+  border: none;
+  border-radius: 100%;
+  width: 200px;
+  height: 200px;
+  background-size: cover;
+  background-color: transparent;
+  margin-right: 0;
+
+}
+
+.push-button:hover {
+  background-image: url('../hoover.png');
+  background-size: cover;
+  background-color: transparent;
+}
+
+.push-button:active, .push-button:focus {
+  background-image: url('../clicked.png');
+  background-size: cover;
+  border: none;
+  content: "klikles";
+  transform: translateY(4px);
+  background-color: transparent;
+  outline: none;
+}
