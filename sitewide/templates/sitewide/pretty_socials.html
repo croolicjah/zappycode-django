@@ -19,7 +19,6 @@
 {% else %}
     {# it will be used with socialZappyCode.png where zappycode is writen, we need something else #}
     <meta property="og:title" content="Dank courses. Learn with fun not boredom">
-
 {% endif %}
 
 {# description #}
@@ -27,7 +26,6 @@
     <meta property="og:description" content="{{ description|safe }}">
     <meta name="twitter:description" content="{{ description|safe }}">
 {% else %}
-
     <meta property="og:description"
           content="Trying to learn something new? Rather than watching a bunch of half-baked YouTube videos and tutorials that haven't been updated in 3 years, come take one of our complete end to end courses designed for you!">
     <meta name="twitter:description"
@@ -43,27 +41,22 @@
     <meta name="twitter:image" content="https://ZappyCode.com{{ image.url }}">
 {% elif vimeo %}
     <meta property="og:image" content="https://i.vimeocdn.com/video/{{ vimeo }}_640.png">
-
     <meta property="og:image:type" content="image/png">
     <meta property="og:image:width" content="640">
     <meta property="og:image:height" content="358">
     <meta name="twitter:image" content="https://i.vimeocdn.com/video/{{ vimeo }}_640.png">
-
 {% elif youtube %}
     <meta property="og:image" content="http://i3.ytimg.com/vi/{{ youtube }}/maxresdefault.jpg">
-
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:image" content="http://i3.ytimg.com/vi/{{ youtube }}/maxresdefault.jpg">
-
 {% else %}
     <meta property="og:image" content="https://ZappyCode.com{% static 'sitewide/socialZappyCode.png' %}">
     <meta property="og:image:type" content="image/png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:image" content="https://ZappyCode.com{% static 'sitewide/socialZappyCode.png' %}">
-
 {% endif %}
 
 {# there is no tags but in case if will be #}
@@ -72,4 +65,3 @@
 {#    <meta content="{{ tag }}" property="article:tag">#}
 {#    {% endfor %}#}
 {#{% endif %}#}
-
